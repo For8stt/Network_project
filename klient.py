@@ -4,6 +4,7 @@ import struct
 
 from tkinter import Tk
 from tkinter import filedialog
+import time
 
 import os
 
@@ -11,8 +12,10 @@ import os
 # MESSAGE_TYPE_FILE = 1
 # MESSAGE_TYPE_HANDSHAKE = 2
 
-MAX_UDP_SIZE = 65507
+MAX_UDP_SIZE = 1472
 HEADER_LENGTH=12
+SAVE_DIRECTORY='/Users/ulian/PycharmProjects/pksPraktika/receive'
+
 
 CLIENT_MY_IP = "127.0.0.1"
 CLIENT_MY_PORT = 50602
@@ -32,9 +35,13 @@ class Client:
     def receive(self):
         while self.running:
             received_fragments = {}
+
+
             while True:
                 data, addr = self.sock.recvfrom(65535)  # Розмір пакета
                 header = struct.unpack('!III', data[:HEADER_LENGTH])  # Розпакування заголовка
+                if len(received_fragments) == 0:
+                    start_time = time.time()
                 fragment_number, total_fragments, message_type = header
                 fragment_data = data[HEADER_LENGTH:]  # Відокремлюємо дані фрагмента
 
@@ -42,7 +49,7 @@ class Client:
                     break
 
                 received_fragments[fragment_number] = fragment_data
-                print(f"Received fragment {fragment_number + 1}/{total_fragments}: {fragment_data.decode('utf-8')}")
+                print(f"Received fragment {fragment_number + 1}/{total_fragments} (Size: {len(fragment_data)} bytes)")
 
                 # Якщо всі фрагменти отримані
                 if len(received_fragments) == total_fragments:
@@ -51,8 +58,10 @@ class Client:
             if not message_type == 2:
                complete_message = b''.join(received_fragments[i] for i in range(total_fragments))
 
+            elapsed_time = time.time() - start_time  # Вимірюємо час передачі
 
             if message_type == 0:
+                print(f"Received file of size: {len(complete_message)} bytes in {elapsed_time:.5f} seconds.")
                 print(f"Received message: {complete_message.decode('utf-8', errors='ignore')}")
                 if complete_message.decode('utf-8')=='quit':
                     print("Received quit signal, closing connection.")
@@ -62,14 +71,14 @@ class Client:
                     break
             elif message_type == 1:
                 self.save_file(complete_message)
-                print(f"Received file of size: {len(complete_message)} bytes")
+                print(f"Received file of size: {len(complete_message)} bytes in {elapsed_time:.5f} seconds.")
             elif message_type == 2 and not self.connected:
                 self.connected = True
                 self.send_handshake()
 
 
     def save_file(self, file_data):
-        save_directory='/Users/ulian/PycharmProjects/pksPraktika/receive'
+        save_directory=SAVE_DIRECTORY
 
         if not os.path.exists(save_directory):
             os.makedirs(save_directory)
@@ -107,7 +116,8 @@ class Client:
             total_length = len(message_bytes)
 
             num_fragments = (total_length // (MAX_UDP_SIZE - HEADER_LENGTH)) + 1
-
+            print(f"Total size: {total_length} bytes")
+            print(f"Number of fragments: {num_fragments}")
             for i in range(num_fragments):
                 start = i * (MAX_UDP_SIZE - HEADER_LENGTH)
                 end = min(start + (MAX_UDP_SIZE - HEADER_LENGTH), total_length)
@@ -116,7 +126,7 @@ class Client:
                 header = self.make_header(i, num_fragments, 0)
                 packet = header + fragment
                 self.sock.sendto(packet, (CLIENT_SENT_IP, CLIENT_SENT_PORT))
-                print(f"Sent fragment {i + 1}/{num_fragments}: {fragment.decode('utf-8')}")
+                print(f"Sent fragment {i + 1}/{num_fragments}: {len(fragment)} bytes")
 
 
     def choose_file_and_send(self):
@@ -132,9 +142,10 @@ class Client:
         with open(file_path, 'rb') as f:
             file_data=f.read()
             total_length = len(file_data)
-
+            print(f"File Name: {os.path.basename(file_path)}")
+            print(f"Total Size: {total_length} bytes")
             num_fragments = (total_length // (MAX_UDP_SIZE - HEADER_LENGTH)) + 1
-
+            print(f"Number of fragments to send: {num_fragments}")
             for i in range(num_fragments):
                 start = i*(MAX_UDP_SIZE-HEADER_LENGTH)
                 end=min(start + (MAX_UDP_SIZE - HEADER_LENGTH), total_length)
@@ -143,7 +154,7 @@ class Client:
                 header = self.make_header(i,num_fragments, 1)
                 packet = header + fragment
                 self.sock.sendto(packet, (CLIENT_SENT_IP, CLIENT_SENT_PORT))
-                print(f"Sent fragment {i + 1}/{num_fragments}: {fragment}")
+                print(f"Sent fragment {i + 1}/{num_fragments}: {len(fragment)} bytes")
 
 
     def send_handshake(self):
