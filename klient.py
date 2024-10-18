@@ -11,6 +11,7 @@ import os
 # MESSAGE_TYPE_TEXT = 0
 # MESSAGE_TYPE_FILE = 1
 # MESSAGE_TYPE_HANDSHAKE = 2
+#MESSAGE_TYPE_NAME_FILE = 3
 
 MAX_UDP_SIZE = 1472
 HEADER_LENGTH=12
@@ -35,6 +36,7 @@ class Client:
     def receive(self):
         while self.running:
             received_fragments = {}
+            file_name = None
 
 
             while True:
@@ -47,6 +49,10 @@ class Client:
 
                 if message_type == 2:
                     break
+
+                if message_type == 3:
+                    file_name = fragment_data.decode('utf-8')
+                    continue
 
                 received_fragments[fragment_number] = fragment_data
                 print(f"Received fragment {fragment_number + 1}/{total_fragments} (Size: {len(fragment_data)} bytes)")
@@ -70,20 +76,19 @@ class Client:
                     self.close()
                     break
             elif message_type == 1:
-                self.save_file(complete_message)
+                self.save_file(complete_message,file_name)
                 print(f"Received file of size: {len(complete_message)} bytes in {elapsed_time:.5f} seconds.")
             elif message_type == 2 and not self.connected:
                 self.connected = True
                 self.send_handshake()
 
 
-    def save_file(self, file_data):
+    def save_file(self, file_data,file_name):
         save_directory=SAVE_DIRECTORY
 
         if not os.path.exists(save_directory):
             os.makedirs(save_directory)
 
-        file_name='received_file.txt'
         file_path = os.path.join(save_directory, file_name)
 
         with open(file_path, 'wb') as f:
@@ -142,8 +147,14 @@ class Client:
         with open(file_path, 'rb') as f:
             file_data=f.read()
             total_length = len(file_data)
-            print(f"File Name: {os.path.basename(file_path)}")
+            name_file=os.path.basename(file_path).encode('utf-8')
+            print(f"File Name: {name_file.decode('utf-8')}")
             print(f"Total Size: {total_length} bytes")
+
+            name_header = self.make_header(0, 1, 3)
+            name_packet = name_header + name_file
+            self.sock.sendto(name_packet, (CLIENT_SENT_IP, CLIENT_SENT_PORT))
+
             num_fragments = (total_length // (MAX_UDP_SIZE - HEADER_LENGTH)) + 1
             print(f"Number of fragments to send: {num_fragments}")
             for i in range(num_fragments):
