@@ -123,7 +123,7 @@ class Client2:
                         file_name = fragment_data.decode('utf-8')
                         continue
 
-                    if message_type == 1:  # FILE
+                    if message_type in {0 , 1}:  # FILE or TEXT
                         if fragment_number == expected_seq_num:
                             received_fragments[fragment_number] = fragment_data
                             expected_seq_num += 1
@@ -137,8 +137,8 @@ class Client2:
                         ack_header = self.make_header(fragment_number, total_fragments, 4, 0)  # 4  ACK
                         self.send_sock.sendto(ack_header, (self.receiver_ip, self.receiver_port))
                         print(f"Sent ACK for fragment {fragment_number + 1}/{total_fragments}")
-                    if message_type == 0:  # TEXT
-                        received_fragments[fragment_number] = fragment_data
+                    # if message_type == 0:  # TEXT
+                    #     received_fragments[fragment_number] = fragment_data
 
                     if len(received_fragments) == total_fragments:
                         break
@@ -217,17 +217,8 @@ class Client2:
                 num_fragments = (total_length // (MAX_UDP_SIZE - HEADER_LENGTH)) + 1
                 print(f"Total size: {total_length} bytes")
                 print(f"Number of fragments: {num_fragments}")
-                for i in range(num_fragments):
-                    start = i * (MAX_UDP_SIZE - HEADER_LENGTH)
-                    end = min(start + (MAX_UDP_SIZE - HEADER_LENGTH), total_length)
-                    fragment = message_bytes[start:end]
 
-                    crc = self.crc16(fragment)
-
-                    header = self.make_header(i, num_fragments, 0, crc)
-                    packet = header + fragment
-                    self.send_sock.sendto(packet, (CLIENT_SENT_IP, CLIENT_SENT_PORT))
-                    print(f"Sent fragment {i + 1}/{num_fragments}: {len(fragment)} bytes")
+                self.SelectRepeat(num_fragments, message_bytes, total_length, 0)
             except OSError as e:
                 print(f"Error sending packet: {e}")
                 self.running = False
@@ -258,26 +249,29 @@ class Client2:
 
             num_fragments = (total_length // (MAX_UDP_SIZE - HEADER_LENGTH)) + 1
 
-            next_seq_num = 0
+            self.SelectRepeat(num_fragments,file_data,total_length,1)
 
-            while self.base < num_fragments:
-                while next_seq_num < self.base + self.WINDOW_SIZE and next_seq_num < num_fragments:
-                    start = next_seq_num * (MAX_UDP_SIZE - HEADER_LENGTH)
-                    end = min(start + (MAX_UDP_SIZE - HEADER_LENGTH), total_length)
-                    fragment = file_data[start:end]
 
-                    crc = self.crc16(fragment)
-                    print(crc)
-                    print(fragment)
-                    header = self.make_header(next_seq_num, num_fragments, 1, crc)
-                    packet = header + fragment
-                    self.send_sock.sendto(packet, (CLIENT_SENT_IP, CLIENT_SENT_PORT))
+    def SelectRepeat(self,num_fragments,file_data,total_length,message_type):
+        next_seq_num = 0
+        while self.base < num_fragments:
+            while next_seq_num < self.base + self.WINDOW_SIZE and next_seq_num < num_fragments:
+                start = next_seq_num * (MAX_UDP_SIZE - HEADER_LENGTH)
+                end = min(start + (MAX_UDP_SIZE - HEADER_LENGTH), total_length)
+                fragment = file_data[start:end]
 
-                    print(f"Sent fragment {next_seq_num + 1}/{num_fragments}: {len(fragment)} bytes")
-                    self.window[next_seq_num] = (packet, time.time())
-                    next_seq_num += 1
+                crc = self.crc16(fragment)
 
-                self.receive_sock.settimeout(3)
+                header = self.make_header(next_seq_num, num_fragments, message_type, crc)
+                packet = header + fragment
+                self.send_sock.sendto(packet, (CLIENT_SENT_IP, CLIENT_SENT_PORT))
+
+                print(f"Sent fragment {next_seq_num + 1}/{num_fragments}: {len(fragment)} bytes")
+                self.window[next_seq_num] = (packet, time.time())
+                next_seq_num += 1
+
+            self.receive_sock.settimeout(3)
+        self.base=0
 
     def crc16(self, data: bytes) -> int:
         crc = 0xFFFF
