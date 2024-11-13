@@ -9,8 +9,8 @@ import time
 import os
 
 MAX_UDP_SIZE = 1472
-HEADER_LENGTH=14
-SAVE_DIRECTORY='/Users/ulian/PycharmProjects/pksPraktika/receive'
+HEADER_LENGTH=11
+FRAGMENT=MAX_UDP_SIZE - HEADER_LENGTH
 
 
 CLIENT_MY_IP = "127.0.0.1"
@@ -69,9 +69,11 @@ class Client2:
                     self.close()
 
     def receive(self):
+        message_type = None
         while self.running:
             received_fragments = {}
             file_name = None
+            last_fragment_received = False
 
             expected_seq_num = 0
             window = {}
@@ -79,17 +81,17 @@ class Client2:
             while True:
                 try:
                     data, addr = self.receive_sock.recvfrom(MAX_UDP_SIZE)
-                    header = struct.unpack('!IIIH', data[:HEADER_LENGTH])
+                    header = struct.unpack('!IBIH', data[:HEADER_LENGTH])
 
-                    fragment_number, total_fragments, message_type, crc_received = header
+                    fragment_number, last_fragment, message_type, crc_received = header
                     crc_calculated = self.crc16(data[HEADER_LENGTH:])
 
-                    if crc_calculated != crc_received and message_type in {0 , 1}:
+                    if crc_calculated != crc_received and message_type in {0, 1}:
                         print(
                             f"Received fragment {fragment_number + 1} with CRC error. Expected: {crc_received}, Calculated: {crc_calculated}")
                         continue
-                    elif message_type in {0 , 1}:
-                        # print(f"Received fragment {fragment_number + 1} without CRC error. Expected: {crc_received}, Calculated: {crc_calculated}")
+                    elif message_type in {0, 1}:
+                        # print( f"Received fragment {fragment_number + 1} without CRC error. Expected: {crc_received}, Calculated: {crc_calculated}")
                         pass
 
                     if message_type == 4:
@@ -110,7 +112,6 @@ class Client2:
 
                         heartbeat_header = self.make_header(0, 1, 6, 0)  # 5  heartbeat
                         self.send_sock.sendto(heartbeat_header, (self.receiver_ip, self.receiver_port))
-
                         continue
 
                     fragment_data = data[HEADER_LENGTH:]
@@ -123,7 +124,7 @@ class Client2:
                         file_name = fragment_data.decode('utf-8')
                         continue
 
-                    if message_type in {0 , 1}:  # FILE or TEXT
+                    if message_type in {0, 1}:  # FILE or TEXT
                         if fragment_number == expected_seq_num:
                             received_fragments[fragment_number] = fragment_data
                             expected_seq_num += 1
@@ -134,13 +135,23 @@ class Client2:
                         elif fragment_number > expected_seq_num:
                             window[fragment_number] = fragment_data
 
-                        ack_header = self.make_header(fragment_number, total_fragments, 4, 0)  # 4  ACK
+                        if expected_seq_num == fragment_number:
+                            ack_header = self.make_header(fragment_number, 1, 4, 0)
+                        else:
+                            ack_header = self.make_header(fragment_number, 0, 4, 0)
+
+                        # ack_header = self.make_header(fragment_number, 0, 4,0)  # 4  ACK
                         self.send_sock.sendto(ack_header, (self.receiver_ip, self.receiver_port))
-                        print(f"Sent ACK for fragment {fragment_number + 1}/{total_fragments}")
-                    # if message_type == 0:  # TEXT
+                        print(f"Sent ACK for fragment {fragment_number + 1}")
+                        # print(f"Sent ACK for fragment {fragment_number + 1}/{total_fragments}")
+                    # if message_type == 0: #TEXT
                     #     received_fragments[fragment_number] = fragment_data
 
-                    if len(received_fragments) == total_fragments:
+                    # if len(received_fragments) == total_fragments:
+                    #     break
+                    if last_fragment == 1:
+                        last_fragment_received = True
+                    if last_fragment_received and len(received_fragments) == expected_seq_num:
                         break
                 except socket.timeout:
 
@@ -155,10 +166,12 @@ class Client2:
                     self.connected = False
                     break
                 ###==================================================================================####
-            if message_type in {0, 1, 3}:
-                complete_message = b''.join(received_fragments[i] for i in range(total_fragments))
+            # if  message_type in {0, 1,3}:
+            #    complete_message = b''.join(received_fragments[i] for i in range(total_fragments))
+            if message_type in {0, 1}:
+                elapsed_time = time.time() - start_time
+                complete_message = b''.join(received_fragments[i] for i in sorted(received_fragments.keys()))
 
-            elapsed_time = time.time() - start_time
             if message_type == 0:
                 print(f"Received file of size: {len(complete_message)} bytes in {elapsed_time:.5f} seconds.")
                 print(f"Received message: {complete_message.decode('utf-8', errors='ignore')}")
@@ -176,7 +189,7 @@ class Client2:
                 self.send_handshake()
 
     def save_file(self, file_data, file_name):
-        save_directory = SAVE_DIRECTORY
+        save_directory = os.path.join(os.getcwd(), "downloadFile")
 
         if not os.path.exists(save_directory):
             os.makedirs(save_directory)
@@ -194,8 +207,6 @@ class Client2:
         while self.running:
             try:
                 message = input("Input message to server (or '1' to send a file):  ")
-                if self.running == False:
-                    break
                 if not self.running and not self.connected:
                     break
 
@@ -204,8 +215,13 @@ class Client2:
                     print("Failed to connect to a user ..")
                     continue
 
+                size = int(input(f"Size of file/message to send (maximum is {FRAGMENT}): "))
+                if FRAGMENT - size < 0 or size <= 0:
+                    print('!!entered an incorrect range!!')
+                    continue
+
                 if message == '1':
-                    self.choose_file_and_send()
+                    self.choose_file_and_send(size)
                     continue
                 if message == 'quit':
                     self.connected = False
@@ -214,11 +230,11 @@ class Client2:
                 message_bytes = message.encode('utf-8')
                 total_length = len(message_bytes)
 
-                num_fragments = (total_length // (MAX_UDP_SIZE - HEADER_LENGTH)) + 1
+                num_fragments = (total_length + size - 1) // size
                 print(f"Total size: {total_length} bytes")
                 print(f"Number of fragments: {num_fragments}")
 
-                self.SelectRepeat(num_fragments, message_bytes, total_length, 0)
+                self.SelectRepeat(num_fragments, message_bytes, total_length, 0, size)
             except OSError as e:
                 print(f"Error sending packet: {e}")
                 self.running = False
@@ -226,16 +242,16 @@ class Client2:
                 print(f"Error during receiving: {e}")
                 self.running = False
 
-    def choose_file_and_send(self):
+    def choose_file_and_send(self, size):
         root = Tk()
         root.withdraw()
 
         filw_path = filedialog.askopenfilename()
         if filw_path:
             print(f"Selected file: {filw_path}")
-            self.send_file(filw_path)
+            self.send_file(filw_path, size)
 
-    def send_file(self, file_path):
+    def send_file(self, file_path, size):
         with open(file_path, 'rb') as f:
             file_data = f.read()
             total_length = len(file_data)
@@ -243,26 +259,31 @@ class Client2:
             print(f"File Name: {name_file.decode('utf-8')}")
             print(f"Total Size: {total_length} bytes")
 
-            name_header = self.make_header(0, 1, 3, 0)
+            # 0 or 1
+            name_header = self.make_header(0, 0, 3, 0)
             name_packet = name_header + name_file
             self.send_sock.sendto(name_packet, (CLIENT_SENT_IP, CLIENT_SENT_PORT))
 
-            num_fragments = (total_length // (MAX_UDP_SIZE - HEADER_LENGTH)) + 1
+            num_fragments = (total_length + size - 1) // size
 
-            self.SelectRepeat(num_fragments,file_data,total_length,1)
+            self.SelectRepeat(num_fragments, file_data, total_length, 1, size)
 
-
-    def SelectRepeat(self,num_fragments,file_data,total_length,message_type):
+    def SelectRepeat(self, num_fragments, file_data, total_length, message_type, sizeOfFragment):
         next_seq_num = 0
         while self.base < num_fragments:
             while next_seq_num < self.base + self.WINDOW_SIZE and next_seq_num < num_fragments:
-                start = next_seq_num * (MAX_UDP_SIZE - HEADER_LENGTH)
-                end = min(start + (MAX_UDP_SIZE - HEADER_LENGTH), total_length)
+                start = next_seq_num * sizeOfFragment
+                end = min(start + sizeOfFragment, total_length)
                 fragment = file_data[start:end]
 
                 crc = self.crc16(fragment)
 
-                header = self.make_header(next_seq_num, num_fragments, message_type, crc)
+                if next_seq_num == num_fragments - 1:
+                    header = self.make_header(next_seq_num, 1, message_type, crc)
+                else:
+                    header = self.make_header(next_seq_num, 0, message_type, crc)
+
+                # header = self.make_header(next_seq_num, num_fragments, message_type, crc)
                 packet = header + fragment
                 self.send_sock.sendto(packet, (CLIENT_SENT_IP, CLIENT_SENT_PORT))
 
@@ -271,7 +292,7 @@ class Client2:
                 next_seq_num += 1
 
             self.receive_sock.settimeout(3)
-        self.base=0
+        self.base = 0
 
     def crc16(self, data: bytes) -> int:
         crc = 0xFFFF
@@ -290,8 +311,8 @@ class Client2:
         self.send_sock.sendto(packet, (CLIENT_SENT_IP, CLIENT_SENT_PORT))
 
     ###=======I — unsigned int, 4 ₴₴ H=2bite ₴₴ B=1bite ₴₴ Q=8bite ==========###
-    def make_header(self, fragment_number, num_fragments, message_type, crc):
-        return struct.pack('!IIIH', fragment_number, num_fragments, message_type, crc)
+    def make_header(self, fragment_number, last_fragment, message_type, crc):
+        return struct.pack('!IBIH', fragment_number, last_fragment, message_type, crc)
 
     def close(self):
         print("Closing connection...")
