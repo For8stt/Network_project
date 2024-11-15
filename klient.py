@@ -8,6 +8,8 @@ import time
 
 import os
 
+import random
+
 # MESSAGE_TYPE_TEXT = 0
 # MESSAGE_TYPE_FILE = 1
 # MESSAGE_TYPE_HANDSHAKE = 2
@@ -44,12 +46,15 @@ class Client:
         self.running = True
         self.connected = False
 
+        self.lastAcceptedNumber=None
+        self.window = {}
+        self.base = 0
+        self.lastFragment=False
+
         self.receive_thread = threading.Thread(target=self.receive)
         self.receive_thread.daemon = True
         self.receive_thread.start()
 
-        self.window={}
-        self.base=0
 
         self.keep_alive_interval = 5
         self.heartbeat_timeout = 3
@@ -96,6 +101,8 @@ class Client:
                     fragment_number, last_fragment, message_type ,crc_received= header
                     crc_calculated=self.crc16(data[HEADER_LENGTH:])
 
+                    if message_type in {0, 1} and len(received_fragments) == 0:
+                        start_time = time.time()
                     if crc_calculated != crc_received and message_type in {0 , 1}:
                         print(
                             f"Received fragment {fragment_number + 1} with CRC error. Expected: {crc_received}, Calculated: {crc_calculated}")
@@ -107,8 +114,25 @@ class Client:
                     if message_type == 4:
                         print(f"Received ACK for fragment {fragment_number + 1}")
                         del self.window[fragment_number]
+
+                        if self.lastAcceptedNumber is None or fragment_number > self.lastAcceptedNumber:
+                            self.lastAcceptedNumber = fragment_number
+
                         if fragment_number == self.base:
-                            self.base += 1
+                            # print(f'===base is before: {self.base}===')
+
+                            if self.window:
+                                self.base = min(self.window.keys())
+                            elif self.lastAcceptedNumber is not None:
+                                self.base = self.lastAcceptedNumber+1
+                            # print(f"base is {self.base}, self.lastAcceptedNumber is {self.lastAcceptedNumber}, self.window.keys is {self.window.keys()}")
+
+                            if last_fragment == 1:
+                                self.lastFragment=True
+                            if self.lastFragment and len(self.window) == 0:
+                               self.lastAcceptedNumber=None
+                               self.lastFragment=False
+                        break
 
                     if message_type == 6:  # 6 heartbeat reply
                         # print("Received a response to heartbeat.")
@@ -125,8 +149,6 @@ class Client:
                         continue
 
                     fragment_data = data[HEADER_LENGTH:]
-                    if len(received_fragments) == 0:
-                        start_time = time.time()
                     if message_type == 2: #handshake
                         break
 
@@ -146,7 +168,7 @@ class Client:
                             window[fragment_number] = fragment_data
 
 
-                        if expected_seq_num == fragment_number:
+                        if last_fragment:
                             ack_header = self.make_header(fragment_number, 1, 4, 0)
                         else:
                             ack_header = self.make_header(fragment_number, 0, 4, 0)
@@ -158,21 +180,25 @@ class Client:
                     # if message_type == 0: #TEXT
                     #     received_fragments[fragment_number] = fragment_data
 
-
-                    # if len(received_fragments) == total_fragments:
-                    #     break
                     if last_fragment == 1:
                         last_fragment_received = True
-                    if last_fragment_received and len(received_fragments) == expected_seq_num:
-                        break
+                    if last_fragment_received and len(window) == 0:
+                        fragment_numbers = list(received_fragments.keys())
+                        if len(fragment_numbers) > 0:
+                            expected_sequence = set(range(0, max(fragment_numbers) + 1))
+                            received_sequence = set(fragment_numbers)
+                            if expected_sequence == received_sequence:
+                                break
                 except socket.timeout:
 
                     for seq_num in self.window:
 
                         packet, send_time = self.window[seq_num]
+                        packet=self.process_packet(packet)
                         if time.time() - send_time > 3:
                             print(f"Timeout for fragment {seq_num + 1}, resending...")
                             self.send_sock.sendto(packet, (CLIENT_SENT_IP, CLIENT_SENT_PORT))
+                    continue
                 except Exception as e:
                     self.running = False
                     self.connected = False
@@ -288,8 +314,10 @@ class Client:
                 start = next_seq_num * sizeOfFragment
                 end = min(start + sizeOfFragment, total_length)
                 fragment = file_data[start:end]
+                # crc = self.crc16(fragment)
 
-                crc = self.crc16(fragment)
+                fragment_for_Error = self.simulate_packet_error(fragment, error_rate=0.1)
+                crc = self.crc16(fragment_for_Error)
 
                 if next_seq_num == num_fragments-1:
                    header = self.make_header(next_seq_num, 1, message_type, crc)
@@ -335,6 +363,31 @@ class Client:
         # self.receive_thread.join()
         print("Connection closed.")
 
+
+    def simulate_packet_error(self,data, error_rate=0.1):
+
+        if random.random() < error_rate:
+
+            error_position = random.randint(0, len(data) - 1)
+            corrupted_byte = random.randint(0, 255)
+
+            data = data[:error_position] + bytes([corrupted_byte]) + data[error_position + 1:]
+            print(f"Simulated error at position {error_position}")
+        return data
+
+    def process_packet(self, packet):
+
+        header = packet[:HEADER_LENGTH]
+        fragment_data = packet[HEADER_LENGTH:]
+
+        fragment_number, last_fragment, message_type, crc_received = struct.unpack('!IBIH', header)
+
+        crc_calculated = self.crc16(fragment_data)
+
+        header=self.make_header(fragment_number, last_fragment, message_type, crc_calculated)
+        packet=header + fragment_data
+        print(fragment_number)
+        return packet
 
 if __name__ == "__main__":
     # print("!!!do not forget to change the path where to save the received files in the parameters!!!");
