@@ -22,6 +22,8 @@ MAX_UDP_SIZE = 1472
 HEADER_LENGTH=11
 FRAGMENT=MAX_UDP_SIZE - HEADER_LENGTH
 
+SAVE_DIRECTORY="/Users/ulian/PycharmProjects/pksPraktika/downloadFile"
+STOP_CONNECTION=False
 
 
 CLIENT_MY_IP = "127.0.0.1"
@@ -50,6 +52,7 @@ class Client:
         self.window = {}
         self.base = 0
         self.lastFragment=False
+        self.lock = threading.Lock()
 
         self.receive_thread = threading.Thread(target=self.receive)
         self.receive_thread.daemon = True
@@ -81,6 +84,10 @@ class Client:
                     self.running = False
                     self.close()
 
+    def cancelTimer(self):
+        self.last_heartbeat_time = time.time()
+        self.heartbeat_sent_count = 0
+
 
     def receive(self):
         message_type=None
@@ -100,6 +107,9 @@ class Client:
 
                     fragment_number, last_fragment, message_type ,crc_received= header
                     crc_calculated=self.crc16(data[HEADER_LENGTH:])
+                    self.cancelTimer()
+                    if STOP_CONNECTION:
+                        continue
 
                     if message_type in {0, 1} and len(received_fragments) == 0:
                         start_time = time.time()
@@ -113,7 +123,9 @@ class Client:
 
                     if message_type == 4:
                         print(f"Received ACK for fragment {fragment_number + 1}")
-                        del self.window[fragment_number]
+                        with self.lock:
+                            if fragment_number in self.window:
+                                del self.window[fragment_number]
 
                         if self.lastAcceptedNumber is None or fragment_number > self.lastAcceptedNumber:
                             self.lastAcceptedNumber = fragment_number
@@ -134,15 +146,13 @@ class Client:
                                self.lastFragment=False
                         break
 
-                    if message_type == 6:  # 6 heartbeat reply
+                    if message_type == 6:  # 6 heartbeat receiving a response
                         # print("Received a response to heartbeat.")
-                        self.last_heartbeat_time = time.time()
-                        self.heartbeat_sent_count = 0
+                        self.cancelTimer()
                         continue
-                    if message_type == 5:  # 5  heartbeat
+                    if message_type == 5:  # 5  heartbeat sending a reply
                         # print("Received heartbeat.")
-                        self.last_heartbeat_time = time.time()
-                        self.heartbeat_sent_count = 0
+                        self.cancelTimer()
 
                         heartbeat_header = self.make_header(0, 1, 6, 0)  # 5  heartbeat
                         self.send_sock.sendto(heartbeat_header, (self.receiver_ip, self.receiver_port))
@@ -200,6 +210,7 @@ class Client:
                             self.send_sock.sendto(packet, (CLIENT_SENT_IP, CLIENT_SENT_PORT))
                     continue
                 except Exception as e:
+                    print(f"An error occurred: {e}")
                     self.running = False
                     self.connected = False
                     break
@@ -227,7 +238,21 @@ class Client:
                 self.send_handshake()
 
     def save_file(self, file_data,file_name):
+        # while True:
+        #     massege=int(input('Do you want to change the storage directory (1=yes/0=no):'))
+        #     if massege==1:
+        #         root = Tk()
+        #         root.withdraw()
+        #
+        #         save_directory = filedialog.askdirectory(title="Select Directory to Save File")
+        #     else:
+        #         save_directory = SAVE_DIRECTORY
+        #
+        #
+        #     if  os.path.exists(save_directory):
+        #         break
         save_directory = os.path.join(os.getcwd(), "downloadFile")
+        # save_directory=SAVE_DIRECTORY
 
         if not os.path.exists(save_directory):
             os.makedirs(save_directory)
@@ -244,9 +269,14 @@ class Client:
 
         while self.running:
             try:
-                message = input("Input message to server (or '1' to send a file):  ")
+                message = input("Input message to server (or '1' to send a file, '2' to pause for 10 seconds):  ")
                 if not self.running and not self.connected:
                     break
+
+                if message == '2':
+                    print("Pausing receiving for 10 seconds...")
+                    self.pause_receiving_for_10_seconds()
+                    continue
 
                 if not self.connected:
                     self.send_handshake()
@@ -256,6 +286,8 @@ class Client:
                 if FRAGMENT - size < 0 or size <= 0:
                     print('!!entered an incorrect range!!')
                     continue
+
+                self.cancelTimer()
 
                 if message == '1':
                     self.choose_file_and_send(size)
@@ -316,7 +348,7 @@ class Client:
                 fragment = file_data[start:end]
                 # crc = self.crc16(fragment)
 
-                fragment_for_Error = self.simulate_packet_error(fragment, error_rate=0.1)
+                fragment_for_Error = self.simulate_packet_error(fragment, error_rate=0.0)
                 crc = self.crc16(fragment_for_Error)
 
                 if next_seq_num == num_fragments-1:
@@ -326,11 +358,12 @@ class Client:
 
                 # header = self.make_header(next_seq_num, num_fragments, message_type, crc)
                 packet = header + fragment
+                with self.lock:
+                     self.window[next_seq_num] = (packet, time.time())
+                next_seq_num += 1
                 self.send_sock.sendto(packet, (CLIENT_SENT_IP, CLIENT_SENT_PORT))
 
                 print(f"Sent fragment {next_seq_num + 1}/{num_fragments}: {len(fragment)} bytes")
-                self.window[next_seq_num] = (packet, time.time())
-                next_seq_num += 1
 
             self.receive_sock.settimeout(3)
         self.base=0
@@ -388,6 +421,13 @@ class Client:
         packet=header + fragment_data
         print(fragment_number)
         return packet
+
+    def pause_receiving_for_10_seconds(self):
+        global STOP_CONNECTION
+        STOP_CONNECTION=True
+        time.sleep(10)
+        STOP_CONNECTION=False
+        print("Ending the pause")
 
 if __name__ == "__main__":
     # print("!!!do not forget to change the path where to save the received files in the parameters!!!");
