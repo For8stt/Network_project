@@ -14,28 +14,31 @@ import random
 # MESSAGE_TYPE_FILE = 1
 # MESSAGE_TYPE_HANDSHAKE = 2
 # MESSAGE_TYPE_NAME_FILE = 3
-# MESSAGE_TYPE_NAME_ACK =4
+# MESSAGE_TYPE_ACK =4
 # MESSAGE_TYPE_HEARTBEAT = 5
 # MESSAGE_TYPE_HEARTBEAT_REPLY = 6
+# MESSAGE_TYPE_NACK = 7
 
 MAX_UDP_SIZE = 1472
-HEADER_LENGTH=11
+HEADER_LENGTH=8
 FRAGMENT=MAX_UDP_SIZE - HEADER_LENGTH
 
-SAVE_DIRECTORY="/Users/ulian/PycharmProjects/pksPraktika/downloadFile"
+
+SAVE_DIRECTORY=None
 STOP_CONNECTION=False
+Quit=False
+
+# CLIENT_MY_IP = "127.0.0.1"
+# CLIENT_MY_PORT = 50601
+#
+# CLIENT_SENT_IP = "127.0.0.1"
+# CLIENT_SENT_PORT = 50602
 
 
-CLIENT_MY_IP = "127.0.0.1"
-CLIENT_MY_PORT = 50601
-
-CLIENT_SENT_IP = "127.0.0.1"
-CLIENT_SENT_PORT = 50602
-
-# CLIENT_MY_IP = None
-# CLIENT_MY_PORT = None
-# CLIENT_SENT_IP = None
-# CLIENT_SENT_PORT = None
+CLIENT_MY_IP = None
+CLIENT_MY_PORT = None
+CLIENT_SENT_IP = None
+CLIENT_SENT_PORT = None
 
 class Client:
     WINDOW_SIZE = 4
@@ -80,7 +83,7 @@ class Client:
                 self.heartbeat_sent_count += 1
 
                 if self.heartbeat_sent_count >= self.heartbeat_timeout:
-                    print("The connection is lost. No response to heartbeat.")
+                    print("\nThe connection is lost. No response to 3 heartbeat.")
                     self.running = False
                     self.close()
 
@@ -103,7 +106,7 @@ class Client:
             while True:
                 try:
                     data, addr = self.receive_sock.recvfrom(MAX_UDP_SIZE)
-                    header = struct.unpack('!IBIH', data[:HEADER_LENGTH])
+                    header = struct.unpack('!IBBH', data[:HEADER_LENGTH])
 
                     fragment_number, last_fragment, message_type ,crc_received= header
                     crc_calculated=self.crc16(data[HEADER_LENGTH:])
@@ -116,10 +119,20 @@ class Client:
                     if crc_calculated != crc_received and message_type in {0 , 1}:
                         print(
                             f"Received fragment {fragment_number + 1} with CRC error. Expected: {crc_received}, Calculated: {crc_calculated}")
+                        print(f'Sent NACK for fragment {fragment_number}')
+                        header = self.make_header(fragment_number, last_fragment, 7, 0)
+                        self.send_sock.sendto(header, (CLIENT_SENT_IP, CLIENT_SENT_PORT))
                         continue
                     elif message_type in {0 , 1}:
                         # print( f"Received fragment {fragment_number + 1} without CRC error. Expected: {crc_received}, Calculated: {crc_calculated}")
                       pass
+                    if message_type == 7:
+                        print(f'Get NACK for fragment {fragment_number} .Resending a fragment')
+                        packet, _ = self.window[fragment_number]
+                        packet = self.process_packet(packet)
+                        self.send_sock.sendto(packet, (CLIENT_SENT_IP, CLIENT_SENT_PORT))
+
+
 
                     if message_type == 4:
                         print(f"Received ACK for fragment {fragment_number + 1}")
@@ -131,7 +144,6 @@ class Client:
                             self.lastAcceptedNumber = fragment_number
 
                         if fragment_number == self.base:
-                            # print(f'===base is before: {self.base}===')
 
                             if self.window:
                                 self.base = min(self.window.keys())
@@ -183,12 +195,8 @@ class Client:
                         else:
                             ack_header = self.make_header(fragment_number, 0, 4, 0)
 
-                        # ack_header = self.make_header(fragment_number, 0, 4,0)  # 4  ACK
                         self.send_sock.sendto(ack_header, (self.receiver_ip,self.receiver_port))
                         print(f"Sent ACK for fragment {fragment_number + 1}")
-                        # print(f"Sent ACK for fragment {fragment_number + 1}/{total_fragments}")
-                    # if message_type == 0: #TEXT
-                    #     received_fragments[fragment_number] = fragment_data
 
                     if last_fragment == 1:
                         last_fragment_received = True
@@ -210,20 +218,21 @@ class Client:
                             self.send_sock.sendto(packet, (CLIENT_SENT_IP, CLIENT_SENT_PORT))
                     continue
                 except Exception as e:
-                    print(f"An error occurred: {e}")
+                    # print(f"An error occurred: {e}")
                     self.running = False
                     self.connected = False
                     break
                 ###==================================================================================####
-            # if  message_type in {0, 1,3}:
-            #    complete_message = b''.join(received_fragments[i] for i in range(total_fragments))
             if  message_type in {0, 1}:
                 elapsed_time = time.time() - start_time
                 complete_message = b''.join(received_fragments[i] for i in sorted(received_fragments.keys()))
 
             if message_type == 0:
-                print(f"Received file of size: {len(complete_message)} bytes in {elapsed_time:.5f} seconds.")
+                print('********************************************************')
+                print(f"Received text of size: {len(complete_message)} bytes in {elapsed_time:.5f} seconds.")
                 print(f"Received message: {complete_message.decode('utf-8', errors='ignore')}")
+                print('********************************************************')
+                print("Input message to server (or '1' to send a file, '2' to pause for 10 seconds):")
                 if complete_message.decode('utf-8')=='quit':
                     print("Received quit signal, closing connection.")
                     self.running = False
@@ -231,28 +240,23 @@ class Client:
                     self.close()
                     break
             elif message_type == 1:
-                self.save_file(complete_message,file_name)
+                self.save_file(complete_message, file_name)
+                print('********************************************************')
                 print(f"Received file of size: {len(complete_message)} bytes in {elapsed_time:.5f} seconds.")
+                print('********************************************************')
+                print("Input message to server (or '1' to send a file, '2' to pause for 10 seconds):")
             elif message_type == 2 and not self.connected:
                 self.connected = True
                 self.send_handshake()
 
+            message_type = None
+            if len(self.window)==0 and Quit==True:
+                self.close()
+
+
+
     def save_file(self, file_data,file_name):
-        # while True:
-        #     massege=int(input('Do you want to change the storage directory (1=yes/0=no):'))
-        #     if massege==1:
-        #         root = Tk()
-        #         root.withdraw()
-        #
-        #         save_directory = filedialog.askdirectory(title="Select Directory to Save File")
-        #     else:
-        #         save_directory = SAVE_DIRECTORY
-        #
-        #
-        #     if  os.path.exists(save_directory):
-        #         break
-        save_directory = os.path.join(os.getcwd(), "downloadFile")
-        # save_directory=SAVE_DIRECTORY
+        save_directory=SAVE_DIRECTORY
 
         if not os.path.exists(save_directory):
             os.makedirs(save_directory)
@@ -274,7 +278,9 @@ class Client:
                     break
 
                 if message == '2':
+                    print('********************************************************')
                     print("Pausing receiving for 10 seconds...")
+                    print('********************************************************')
                     self.pause_receiving_for_10_seconds()
                     continue
 
@@ -293,16 +299,21 @@ class Client:
                     self.choose_file_and_send(size)
                     continue
                 if message=='quit':
-                    self.connected=False
-                    self.running=False
+                    global Quit
+                    Quit=True
+                    # self.connected=False
+                    # self.running=False
 
 
                 message_bytes = message.encode('utf-8')
                 total_length = len(message_bytes)
 
                 num_fragments=(total_length + size - 1)//size
+                print('********************************************************')
                 print(f"Total size: {total_length} bytes")
                 print(f"Number of fragments: {num_fragments}")
+                print(f'Size of text fragment: {size} bytes')
+                print('********************************************************')
 
                 self.SelectRepeat(num_fragments, message_bytes, total_length,0, size)
             except OSError as e:
@@ -326,9 +337,7 @@ class Client:
         with open(file_path, 'rb') as f:
             file_data=f.read()
             total_length = len(file_data)
-            name_file=os.path.basename(file_path).encode('utf-8')
-            print(f"File Name: {name_file.decode('utf-8')}")
-            print(f"Total Size: {total_length} bytes")
+            name_file = os.path.basename(file_path).encode('utf-8')
 
             #0 or 1
             name_header = self.make_header(0, 0, 3,0)
@@ -336,6 +345,12 @@ class Client:
             self.send_sock.sendto(name_packet, (CLIENT_SENT_IP, CLIENT_SENT_PORT))
 
             num_fragments=(total_length + size - 1)//size
+            print('********************************************************')
+            print(f"File Name: {name_file.decode('utf-8')}")
+            print(f"Total Size: {total_length} bytes")
+            print(f'Number of fragments: {num_fragments}')
+            print(f'Size of fragment: {size} bytes')
+            print('********************************************************')
 
             self.SelectRepeat(num_fragments,file_data,total_length,1,size)
 
@@ -348,7 +363,10 @@ class Client:
                 fragment = file_data[start:end]
                 # crc = self.crc16(fragment)
 
-                fragment_for_Error = self.simulate_packet_error(fragment, error_rate=0.0)
+                if next_seq_num == 0:
+                    fragment_for_Error = self.simulate_packet_error(fragment)
+                else:
+                    fragment_for_Error=fragment
                 crc = self.crc16(fragment_for_Error)
 
                 if next_seq_num == num_fragments-1:
@@ -360,12 +378,12 @@ class Client:
                 packet = header + fragment
                 with self.lock:
                      self.window[next_seq_num] = (packet, time.time())
-                next_seq_num += 1
                 self.send_sock.sendto(packet, (CLIENT_SENT_IP, CLIENT_SENT_PORT))
 
                 print(f"Sent fragment {next_seq_num + 1}/{num_fragments}: {len(fragment)} bytes")
+                next_seq_num += 1
 
-            self.receive_sock.settimeout(3)
+            self.receive_sock.settimeout(5)
         self.base=0
 
     def crc16(self, data: bytes) -> int:
@@ -385,7 +403,7 @@ class Client:
         self.send_sock.sendto(packet, (CLIENT_SENT_IP, CLIENT_SENT_PORT))
 ###=======I — unsigned int, 4 ₴₴ H=2bite ₴₴ B=1bite ₴₴ Q=8bite ==========###
     def make_header(self,fragment_number, last_fragment, message_type,crc):
-        return struct.pack('!IBIH', fragment_number, last_fragment, message_type,crc)
+        return struct.pack('!IBBH', fragment_number, last_fragment, message_type,crc)
 
 
     def close(self):
@@ -393,19 +411,16 @@ class Client:
         self.running = False
         self.receive_sock.close()
         self.send_sock.close()
-        # self.receive_thread.join()
         print("Connection closed.")
+        # self.receive_thread.join()
 
 
-    def simulate_packet_error(self,data, error_rate=0.1):
+    def simulate_packet_error(self,data):
+        error_position = random.randint(0, len(data) - 1)
+        corrupted_byte = random.randint(0, 255)
 
-        if random.random() < error_rate:
-
-            error_position = random.randint(0, len(data) - 1)
-            corrupted_byte = random.randint(0, 255)
-
-            data = data[:error_position] + bytes([corrupted_byte]) + data[error_position + 1:]
-            print(f"Simulated error at position {error_position}")
+        data = data[:error_position] + bytes([corrupted_byte]) + data[error_position + 1:]
+        print(f"Simulated error at position {error_position}")
         return data
 
     def process_packet(self, packet):
@@ -413,32 +428,49 @@ class Client:
         header = packet[:HEADER_LENGTH]
         fragment_data = packet[HEADER_LENGTH:]
 
-        fragment_number, last_fragment, message_type, crc_received = struct.unpack('!IBIH', header)
+        fragment_number, last_fragment, message_type, crc_received = struct.unpack('!IBBH', header)
 
         crc_calculated = self.crc16(fragment_data)
 
         header=self.make_header(fragment_number, last_fragment, message_type, crc_calculated)
         packet=header + fragment_data
-        print(fragment_number)
         return packet
 
     def pause_receiving_for_10_seconds(self):
         global STOP_CONNECTION
         STOP_CONNECTION=True
-        time.sleep(10)
+        time.sleep(9)
         STOP_CONNECTION=False
         print("Ending the pause")
 
+def get_or_create_directory(prompt="Enter the directory where files will be saved: "):
+    while True:
+        directory = input(prompt).strip()
+
+        if os.path.exists(directory):
+            if os.path.isdir(directory):
+                return directory
+            else:
+                print("The path exists but is not a directory. Please try again.")
+        else:
+            print("Directory does not exist.")
+            create = input(f"Do you want to create it? (y/n): ").lower()
+            if create == 'y':
+                os.makedirs(directory)
+                print(f"Directory created: {directory}")
+                return directory
+
 if __name__ == "__main__":
-    # print("!!!do not forget to change the path where to save the received files in the parameters!!!");
-    #
-    # CLIENT_MY_PORT = int(input("Enter your source port: "))
-    # CLIENT_SENT_PORT = int(input("Enter destination port: "))
-    # CLIENT_SENT_IP = input("Enter destination IP: ")
-    # CLIENT_MY_IP = input("Enter your IP: ")
+    CLIENT_MY_PORT = int(input("Enter your source port: "))
+    CLIENT_SENT_PORT = int(input("Enter destination port: "))
+    CLIENT_SENT_IP = input("Enter destination IP: ")
+    CLIENT_MY_IP = input("Enter your IP: ")
+    SAVE_DIRECTORY = get_or_create_directory("Enter the directory where files will be saved: ")
+    # SAVE_DIRECTORY="/Users/ulian/PycharmProjects/pksPraktika/downloadFile"
 
     client = Client(CLIENT_MY_IP, CLIENT_MY_PORT, CLIENT_SENT_IP, CLIENT_SENT_PORT)
 
     client.send()
 
-    client.close()
+    if client.running:
+       client.close()
