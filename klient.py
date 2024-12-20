@@ -126,7 +126,7 @@ class Client:
                     elif message_type in {0 , 1}:
                         # print( f"Received fragment {fragment_number + 1} without CRC error. Expected: {crc_received}, Calculated: {crc_calculated}")
                       pass
-                    if message_type == 7:
+                    if message_type == 7: # 7  received a damaged fragment
                         print(f'Get NACK for fragment {fragment_number} .Resending a fragment')
                         packet, _ = self.window[fragment_number]
                         packet = self.process_packet(packet)
